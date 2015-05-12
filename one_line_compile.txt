@@ -1,0 +1,1 @@
+~/Projects/CrossBridge/sdk//usr/bin/clang++ -I./glm/ -O4 main.cpp gason.cpp MeshBone.cpp CreatureModule.cpp -Wc++11-extensions -emit-swc=sample.Creature  -o Creature.swc
