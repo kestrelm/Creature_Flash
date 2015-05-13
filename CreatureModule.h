@@ -121,6 +121,9 @@ namespace CreatureModule {
 
         // Returns the render composition object
         meshRenderBoneComposition * GetRenderComposition();
+
+        // Get Available Animation names. Note that these animations might not have been loaded yet.
+        const std::vector<std::string>& GetAnimationNames() const;
     
     protected:
         
@@ -133,6 +136,7 @@ namespace CreatureModule {
         glm::uint8 * render_colours;
         int total_num_pts, total_num_indices;
         meshRenderBoneComposition * render_composition;
+        std::vector<std::string> animation_names;
     };
     
     // Class for animating the creature character

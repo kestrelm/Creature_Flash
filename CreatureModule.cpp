@@ -86,6 +86,18 @@ static JsonNode * GetJSONNodeFromKey(JsonNode& json_obj,
     return ret_node;
 }
 
+static std::vector<std::string> GetJSONKeysFromNode(JsonNode& json_obj)
+{
+    std::vector<std::string> ret_keys;
+    for(JsonIterator it = JsonBegin(json_obj.value);
+        it != JsonEnd(json_obj.value); ++it)
+    {
+        ret_keys.push_back(std::string((*it)->key));
+    }
+    
+    return ret_keys;
+}
+
 static std::vector<float> GetJSONNodeFloatArray(JsonNode& json_obj)
 {
     std::vector<float> ret_vals;
@@ -380,6 +392,10 @@ static std::pair<int, int> GetStartEndTimes(JsonNode& json_obj,
         else {
             if(cur_val > ret_times.second) {
                 ret_times.second = cur_val;
+            }
+            
+            if(cur_val < ret_times.first) {
+                ret_times.first = cur_val;
             }
         }
     }
@@ -677,6 +693,12 @@ namespace CreatureModule {
             cur_colour[3] = a;
         }
     }
+
+    const std::vector<std::string>& 
+    Creature::GetAnimationNames() const
+    {
+        return animation_names;
+    }
     
     void
     Creature::LoadFromData(CreatureLoadDataPacket& load_data)
@@ -722,6 +744,10 @@ namespace CreatureModule {
         }
         
         render_composition->resetToWorldRestPts();
+
+        // Fill up available animation names
+        JsonNode * json_anim_base = GetJSONLevelNodeFromKey(*json_root, "animation");
+        animation_names = GetJSONKeysFromNode(*json_anim_base);
     }
 
     
@@ -862,6 +888,7 @@ namespace CreatureModule {
     // CreatureManager class
     CreatureManager::CreatureManager(std::shared_ptr<CreatureModule::Creature> target_creature_in)
     : target_creature(target_creature_in), is_playing(false), run_time(0), time_scale(30.0),
+        do_blending(false),
         blending_factor(0), mirror_y(false), use_custom_time_range(false),
         custom_start_time(0), custom_end_time(0), should_loop(true)
     {
