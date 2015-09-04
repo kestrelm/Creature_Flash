@@ -152,18 +152,28 @@ namespace CreatureModule {
         
         // Return the end time of the animation
         float getEndTime() const;
+
+		// Sets the start time of this animation
+		void setStartTime(int value_in);
+
+		// Sets the end time of this animation
+		void setEndTime(int value_in);
         
         meshBoneCacheManager& getBonesCache();
         
         meshDisplacementCacheManager& getDisplacementCache();
         
         meshUVWarpCacheManager& getUVWarpCache();
+
+		meshOpacityCacheManager& getOpacityCache();
         
         const std::string& getName() const;
         
         bool hasCachePts() const;
         
         std::vector<glm::float32 *>& getCachePts();
+
+		void clearCachePts();
         
         void poseFromCachePts(float time_in, glm::float32 * target_pts, int num_pts);
         
@@ -179,7 +189,8 @@ namespace CreatureModule {
         meshBoneCacheManager bones_cache;
         meshDisplacementCacheManager displacement_cache;
         meshUVWarpCacheManager uv_warp_cache;
-        std::vector<glm::float32 *> cache_pts;
+		meshOpacityCacheManager opacity_cache;
+		std::vector<glm::float32 *> cache_pts;
     };
     
     // Class for managing a collection of animations and a creature character
@@ -231,6 +242,9 @@ namespace CreatureModule {
         
         // Returns the current run time of the animation
         float getRunTime() const;
+
+		// Returns the actual run time if auto blending is involved
+		float getActualRunTime() const;
         
         // Runs a single step of the animation for a given delta timestep
         void Update(float delta);
@@ -270,9 +284,20 @@ namespace CreatureModule {
         void SetBonesOverrideCallback(std::function<void (std::unordered_map<std::string, meshBone *>&) >& callback_in);
         
         // Creates point cache for animation
-        void MakePointCache(const std::string& animation_name_in);
+        void MakePointCache(const std::string& animation_name_in, int gap_step);
+
+		// Clears point cache for animation
+		void ClearPointCache(const std::string& animation_name_in);
+        
+        // Sets auto blending
+        void SetAutoBlending(bool flag_in);
+        
+        // Uses auto blending to blend to the next animation
+        void AutoBlendTo(const std::string& animation_name_in, float blend_delta);
         
     protected:
+
+		float correctRunTime(float time_in, const std::string& animation_name);
         
         std::string ProcessContactBone(const glm::vec2& pt_in,
                                        float radius,
@@ -280,7 +305,24 @@ namespace CreatureModule {
 
         
         void PoseCreature(const std::string& animation_name_in,
-                          glm::float32 * target_pts);
+                          glm::float32 * target_pts,
+						  float input_run_time);
+        
+        void ProcessAutoBlending();
+
+		void increAutoBlendRuntimes(float delta_in);
+
+		glm::float32 * interpFloatArray(glm::float32 * first_list, glm::float32 * second_list, float factor, int array_size);
+
+		void ResetBlendTime(const std::string& name_in);
+
+		void UpdateRegionSwitches(const std::string& animation_name_in);
+
+		void PoseJustBones(const std::string& animation_name_in,
+								glm::float32 * target_pts,
+								float input_run_time);
+
+		void JustRunUVWarps(const std::string& animation_name_in, float input_run_time);
         
         std::unordered_map<std::string, std::shared_ptr<CreatureModule::CreatureAnimation> > animations;
         std::shared_ptr<CreatureModule::Creature> target_creature;
@@ -292,10 +334,15 @@ namespace CreatureModule {
         bool do_blending;
         float blending_factor;
         std::string active_blend_animation_names[2];
+		std::unordered_map<std::string, float> active_blend_run_times;
         bool mirror_y;
         bool use_custom_time_range;
         int custom_start_time, custom_end_time;
         bool should_loop;
+        bool do_auto_blending;
+        std::string auto_blend_names[2];
+        float auto_blend_delta;
+        
         std::function<void (std::unordered_map<std::string, meshBone *>&) > bones_override_callback;
         
     };

@@ -155,6 +155,7 @@ meshBone::meshBone(const std::string& key_in,
     setParentWorldMat(glm::mat4(1.0));
     local_binormal_dir = glm::vec4(0,0,1,1);
     tag_id = 0;
+	parent = NULL;
 }
 
 meshBone::~meshBone()
@@ -474,6 +475,16 @@ void meshBone::setParentWorldInvMat(const glm::mat4& transform_in)
     parent_world_inv_mat = transform_in;
 }
 
+void meshBone::setParent(meshBone * parent_in)
+{
+	parent = parent_in;
+}
+
+meshBone * meshBone::getParent()
+{
+	return parent;
+}
+
 void meshBone::computeParentTransforms()
 {
     glm::mat4 translate_parent =
@@ -544,6 +555,7 @@ meshBone::computeDirs(const glm::vec4& start_pt, const glm::vec4& end_pt)
 void meshBone::addChild(meshBone * bone_in)
 {
     bone_in->setRestParentMat(rest_world_mat, &rest_world_inv_mat);
+	bone_in->setParent(this);
     children.push_back(bone_in);
 }
 
@@ -607,6 +619,7 @@ meshRenderRegion::meshRenderRegion(glm::uint32 * indices_in,
     use_dq = true;
     tag_id = -1;
 	uv_level = 0;
+	opacity = 100.0f;
     
     initUvWarp();
 }
@@ -692,11 +705,55 @@ meshRenderRegion::renameWeightValuesByKey(const std::string& old_key,
 void
 meshRenderRegion::initFastNormalWeightMap(const std::unordered_map<std::string, meshBone *>& bones_map)
 {
+    fast_normal_weight_map.clear();
+    fast_bones_map.clear();
+    reverse_fast_normal_weight_map.clear();
+    relevant_bones_indices.clear();
+    fill_dq_array.clear();
+    
     for(auto& bone_data : bones_map)
     {
         std::vector<float> values = normal_weight_map[bone_data.first];
         fast_normal_weight_map.push_back(values);
+        
+        fast_bones_map.push_back(bone_data.second);
+        
+        if(reverse_fast_normal_weight_map.empty())
+        {
+            reverse_fast_normal_weight_map.resize(values.size());
+            relevant_bones_indices.resize(values.size());
+        }
     }
+    
+    fill_dq_array.resize(bones_map.size());
+    
+    for(size_t i = 0; i < reverse_fast_normal_weight_map.size(); i++)
+    {
+        // reverse normal weight map
+        std::vector<float> new_values(fast_normal_weight_map.size());
+        for(size_t j = 0; j < fast_normal_weight_map.size(); j++)
+        {
+            new_values[j]  = fast_normal_weight_map[j][i];
+        }
+        
+        reverse_fast_normal_weight_map[i] = new_values;
+        
+        // relevant bone indices
+        std::vector<int> relevant_array;
+        const float cutoff_val = 0.05f;
+        for(size_t j = 0; j < fast_normal_weight_map.size(); j++)
+        {
+            float sample_val = fast_normal_weight_map[j][i];
+            if(sample_val > cutoff_val)
+            {
+                relevant_array.push_back((int)j);
+            }
+        }
+        
+        relevant_bones_indices[i] = relevant_array;
+    }
+    
+    fast_normal_weight_map.clear();
 }
 
 int meshRenderRegion::getNumPts() const
@@ -900,6 +957,17 @@ meshRenderRegion::restoreRefUv()
     }
 }
 
+void 
+meshRenderRegion::setOpacity(float value_in)
+{
+	opacity = value_in;
+}
+
+float 
+meshRenderRegion::getOpacity() const
+{
+	return opacity;
+}
 
 glm::vec2
 meshRenderRegion::getRestLocalPt(int index_in) const
@@ -995,6 +1063,66 @@ void meshRenderRegion::poseFinalPts(glm::float32 * output_pts,
     
     // uv warping
     if(use_uv_warp) {
+        runUvWarp();
+    }
+}
+
+void meshRenderRegion::poseFastFinalPts(glm::float32 * output_pts,
+										bool try_local_displacements,
+										bool try_post_displacements,
+										bool try_uv_swap)
+{
+    glm::float32 * read_pt = getRestPts();
+    glm::float32 * write_pt = output_pts;
+    
+    // fill up dqs
+    for(size_t i = 0; i < fill_dq_array.size(); i++)
+    {
+        fill_dq_array[i] = fast_bones_map[i]->getWorldDq();
+    }
+    
+    // pose points
+    for(int i = 0; i < getNumPts(); i++) {
+        glm::vec4 cur_rest_pt(read_pt[0], read_pt[1], read_pt[2], 1);
+        
+        if(use_local_displacements && try_local_displacements) {
+            cur_rest_pt.x += local_displacements[i].x;
+            cur_rest_pt.y += local_displacements[i].y;
+        }
+        
+        glm::mat4 accum_mat(0);
+        dualQuat accum_dq;
+        
+        const auto& weight_map_vals = reverse_fast_normal_weight_map[i];
+        const auto& bone_indices = relevant_bones_indices[i];
+        
+        for(auto j : bone_indices)
+        {
+            float cur_im_weight_val = weight_map_vals[j];
+            const dualQuat& world_dq = fill_dq_array[j];
+            accum_dq.add(world_dq, cur_im_weight_val, cur_im_weight_val);
+        }
+        
+        glm::vec4 final_pt(0);
+        accum_dq.normalize();
+        final_pt = glm::vec4(accum_dq.transform(glm::vec3(cur_rest_pt)), 1);
+        
+        write_pt[0] = final_pt.x;
+        write_pt[1] = final_pt.y;
+        write_pt[2] = 1;
+        
+		if (use_post_displacements && try_post_displacements)
+		{
+            write_pt[0] += post_displacements[i].x;
+            write_pt[1] += post_displacements[i].y;
+        }
+        
+        read_pt += 3;
+        write_pt += 3;
+    }
+    
+    // uv warping
+	if (use_uv_warp && try_uv_swap) {
         runUvWarp();
     }
 }
@@ -1849,6 +1977,12 @@ meshUVWarpCacheManager::setValuesAtTime(int time_in,
         new_data.setUvWarpScale(cur_iter.second->getUvWarpScale());
 		new_data.setLevel(cur_iter.second->getUVLevel());
         
+        auto cur_region = cur_iter.second;
+        if(cur_region->getUseUvWarp())
+        {
+            new_data.setEnabled(true);
+        }
+        
         cache_list.push_back(new_data);
     }
     
@@ -1884,7 +2018,8 @@ meshUVWarpCacheManager::retrieveValuesAtTime(float time_in,
         const std::string& cur_key = base_data.getKey();
         
         meshRenderRegion * set_region = regions_map[cur_key];
-        if(set_region->getUseUvWarp()) {
+        if(set_region->getUseUvWarp() || base_data.getEnabled())
+        {
             glm::vec2 final_local_offset = base_data.getUvWarpLocalOffset();
             
             glm::vec2 final_global_offset = base_data.getUvWarpGlobalOffset();
@@ -1938,7 +2073,7 @@ meshUVWarpCacheManager::retrieveSingleValueAtTime(float time_in,
         
         meshRenderRegion * set_region = region;
         if(cur_key == set_region->getName()) {
-            if(set_region->getUseUvWarp()) {
+            if(set_region->getUseUvWarp() || base_data.getEnabled()) {
 				local_offset = base_data.getUvWarpLocalOffset();
                 
 				global_offset = base_data.getUvWarpGlobalOffset();
@@ -1975,5 +2110,188 @@ meshUVWarpCacheManager::allReady()
     
     return is_ready;
 }
+
+// meshOpacityCacheManager
+meshOpacityCacheManager::meshOpacityCacheManager()
+{
+	is_ready = false;
+}
+
+meshOpacityCacheManager::~meshOpacityCacheManager()
+{
+
+}
+
+void
+meshOpacityCacheManager::init(int start_time_in, int end_time_in)
+{
+	start_time = start_time_in;
+	end_time = end_time_in;
+
+	int num_frames = end_time - start_time + 1;
+	opacity_cache_table.clear();
+	opacity_cache_table.resize(num_frames);
+
+	opacity_cache_data_ready.clear();
+	opacity_cache_data_ready.resize(num_frames);
+	for (size_t i = 0; i < opacity_cache_data_ready.size(); i++) {
+		opacity_cache_data_ready[i] = false;
+	}
+
+	is_ready = false;
+}
+
+void
+meshOpacityCacheManager::makeAllReady()
+{
+	for (size_t i = 0; i < opacity_cache_data_ready.size(); i++) {
+		opacity_cache_data_ready[i] = true;
+	}
+}
+
+int
+meshOpacityCacheManager::getStartTime() const
+{
+	return start_time;
+}
+
+int
+meshOpacityCacheManager::getEndime() const
+{
+	return end_time;
+}
+
+std::vector<std::vector<meshOpacityCache> >&
+meshOpacityCacheManager::getCacheTable()
+{
+	return opacity_cache_table;
+}
+
+int
+meshOpacityCacheManager::getIndexByTime(int time_in) const
+{
+	int retval = time_in - start_time;
+	retval = clipNum(retval, 0, (int)opacity_cache_table.size() - 1);
+
+	return retval;
+}
+
+void
+meshOpacityCacheManager::setValuesAtTime(int time_in,
+						std::unordered_map<std::string, meshRenderRegion *>& regions_map)
+{
+	data_lock.lock();
+
+	int set_index = getIndexByTime(time_in);
+	std::vector<meshOpacityCache> cache_list;
+	for (auto cur_iter : regions_map) {
+		meshOpacityCache new_data(cur_iter.second->getName());
+		new_data.setOpacity(cur_iter.second->getOpacity());
+
+		cache_list.push_back(new_data);
+	}
+
+	opacity_cache_table[set_index] = cache_list;
+	opacity_cache_data_ready[set_index] = true;
+
+	data_lock.unlock();
+}
+
+void
+meshOpacityCacheManager::retrieveValuesAtTime(float time_in,
+											std::unordered_map<std::string, meshRenderRegion *>& regions_map)
+{
+	int base_time = getIndexByTime((int)floorf(time_in));
+	int end_time = getIndexByTime((int)ceilf(time_in));
+
+	if (opacity_cache_data_ready.empty()) {
+		return;
+	}
+
+	if ((opacity_cache_data_ready[base_time] == false)
+		|| (opacity_cache_data_ready[end_time] == false))
+	{
+		return;
+	}
+
+	data_lock.lock();
+
+	std::vector<meshOpacityCache>& base_cache = opacity_cache_table[base_time];
+
+	for (size_t i = 0; i < base_cache.size(); i++) {
+		const meshOpacityCache& base_data = base_cache[i];
+		const std::string& cur_key = base_data.getKey();
+
+		meshRenderRegion * set_region = regions_map[cur_key];
+		float final_opacity = base_data.getOpacity();
+		set_region->setOpacity(final_opacity);
+	}
+
+	data_lock.unlock();
+}
+
+void
+meshOpacityCacheManager::retrieveSingleValueAtTime(float time_in,
+												meshRenderRegion * region,
+												float& out_opacity)
+{
+	int base_time = getIndexByTime((int)floorf(time_in));
+	int end_time = getIndexByTime((int)ceilf(time_in));
+
+	if (opacity_cache_data_ready.empty()) {
+		return;
+	}
+
+	if ((opacity_cache_data_ready[base_time] == false)
+		|| (opacity_cache_data_ready[end_time] == false))
+	{
+		return;
+	}
+
+	data_lock.lock();
+
+	std::vector<meshOpacityCache>& base_cache = opacity_cache_table[base_time];
+	std::vector<meshOpacityCache>& end_cache = opacity_cache_table[end_time];
+
+
+	for (size_t i = 0; i < base_cache.size(); i++) {
+		const meshOpacityCache& base_data = base_cache[i];
+		const meshOpacityCache& end_data = end_cache[i];
+		const std::string& cur_key = base_data.getKey();
+
+		meshRenderRegion * set_region = region;
+		if (cur_key == set_region->getName()) {
+			out_opacity = base_data.getOpacity();
+
+			break;
+		}
+	}
+
+	data_lock.unlock();
+}
+
+bool
+meshOpacityCacheManager::allReady()
+{
+	if (is_ready) {
+		return true;
+	}
+	else {
+		int num_frames = end_time - start_time + 1;
+		int ready_cnt = 0;
+		for (size_t i = 0; i < opacity_cache_data_ready.size(); i++) {
+			if (opacity_cache_data_ready[i]) {
+				ready_cnt++;
+			}
+		}
+
+		if (ready_cnt == num_frames) {
+			is_ready = true;
+		}
+	}
+
+	return is_ready;
+}
+
 
 
